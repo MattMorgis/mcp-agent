@@ -120,13 +120,91 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
         model = await self.select_model(params)
 
         for i in range(params.max_iterations):
+            # Apply prompt caching
+
+            # Add cache_control to tools
+            tools_with_cache = []
+            for idx, tool in enumerate(available_tools):
+                tool_copy = tool.copy()
+                # Mark the last tool with cache_control
+                if idx == len(available_tools) - 1 and len(available_tools) > 0:
+                    tool_copy["cache_control"] = {"type": "ephemeral"}
+                tools_with_cache.append(tool_copy)
+
+            # Add cache_control to system prompt
+            system_content = self.instruction or params.systemPrompt
+            system_with_cache = None
+            if system_content:
+                if isinstance(system_content, str):
+                    system_with_cache = [
+                        {
+                            "type": "text",
+                            "text": system_content,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                elif isinstance(system_content, list):
+                    system_with_cache = []
+                    for idx, block in enumerate(system_content):
+                        block_copy = (
+                            block.copy()
+                            if isinstance(block, dict)
+                            else {"type": "text", "text": block}
+                        )
+                        # Add cache control to the last block
+                        if idx == len(system_content) - 1:
+                            block_copy["cache_control"] = {"type": "ephemeral"}
+                        system_with_cache.append(block_copy)
+
+            # Use progressive caching for conversation history - add cache_control to final message
+            messages_with_cache = []
+
+            for idx, msg in enumerate(messages):
+                msg_copy = msg.copy()
+
+                # If this is the last message in the conversation history, add cache_control
+                if idx == len(messages) - 1:
+                    self.logger.debug(
+                        f"Adding cache breakpoint at message {idx + 1} of {len(messages)}"
+                    )
+
+                    if isinstance(msg_copy.get("content"), str):
+                        msg_copy["content"] = [
+                            {
+                                "type": "text",
+                                "text": msg_copy["content"],
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ]
+                    elif isinstance(msg_copy.get("content"), list):
+                        content_list = []
+                        for c_idx, content in enumerate(msg_copy["content"]):
+                            # Skip image blocks for caching
+                            if isinstance(content, dict):
+                                content_copy = content.copy()
+                                # Only add cache control to the last content block if it's not an image
+                                if (
+                                    c_idx == len(msg_copy["content"]) - 1
+                                    and content.get("type") != "image"
+                                ):
+                                    content_copy["cache_control"] = {
+                                        "type": "ephemeral"
+                                    }
+                                content_list.append(content_copy)
+                            else:
+                                content_list.append(content)
+                        msg_copy["content"] = content_list
+
+                messages_with_cache.append(msg_copy)
+
+            # Build the arguments with cache-enabled components
             arguments = {
                 "model": model,
                 "max_tokens": params.maxTokens,
-                "messages": messages,
-                "system": self.instruction or params.systemPrompt,
+                "messages": messages_with_cache,
+                "system": system_with_cache if system_with_cache else system_content,
                 "stop_sequences": params.stopSequences,
-                "tools": available_tools,
+                "tools": tools_with_cache,
             }
 
             if params.metadata:
@@ -149,6 +227,23 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
                 f"{model} response:",
                 data=response,
             )
+
+            # Log the response with cache info
+            usage_info = response.usage if hasattr(response, "usage") else {}
+            cache_info = {
+                "created_tokens": usage_info.get("cache_creation_input_tokens", 0),
+                "cached_tokens": usage_info.get("cache_read_input_tokens", 0),
+            }
+
+            # Log specific cache info for monitoring
+            if cache_info.get("cached_tokens", 0) > 0:
+                self.logger.info(
+                    f"Cache hit: {cache_info.get('cached_tokens')} tokens read from cache"
+                )
+            elif cache_info.get("created_tokens", 0) > 0:
+                self.logger.info(
+                    f"Cache created: {cache_info.get('created_tokens')} tokens written to cache"
+                )
 
             response_as_message = self.convert_message_to_message_param(response)
             messages.append(response_as_message)
