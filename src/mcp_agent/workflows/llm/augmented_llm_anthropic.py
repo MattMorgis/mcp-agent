@@ -120,8 +120,6 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
         model = await self.select_model(params)
 
         for i in range(params.max_iterations):
-            # Apply prompt caching
-
             # Add cache_control to tools
             tools_with_cache = self._apply_cache_to_tools(available_tools)
 
