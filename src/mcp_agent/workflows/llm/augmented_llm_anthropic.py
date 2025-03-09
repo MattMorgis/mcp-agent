@@ -123,79 +123,14 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
             # Apply prompt caching
 
             # Add cache_control to tools
-            tools_with_cache = []
-            for idx, tool in enumerate(available_tools):
-                tool_copy = tool.copy()
-                # Mark the last tool with cache_control
-                if idx == len(available_tools) - 1 and len(available_tools) > 0:
-                    tool_copy["cache_control"] = {"type": "ephemeral"}
-                tools_with_cache.append(tool_copy)
+            tools_with_cache = self._apply_cache_to_tools(available_tools)
 
             # Add cache_control to system prompt
             system_content = self.instruction or params.systemPrompt
-            system_with_cache = None
-            if system_content:
-                if isinstance(system_content, str):
-                    system_with_cache = [
-                        {
-                            "type": "text",
-                            "text": system_content,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ]
-                elif isinstance(system_content, list):
-                    system_with_cache = []
-                    for idx, block in enumerate(system_content):
-                        block_copy = (
-                            block.copy()
-                            if isinstance(block, dict)
-                            else {"type": "text", "text": block}
-                        )
-                        # Add cache control to the last block
-                        if idx == len(system_content) - 1:
-                            block_copy["cache_control"] = {"type": "ephemeral"}
-                        system_with_cache.append(block_copy)
+            system_with_cache = self._apply_cache_to_system_prompt(system_content)
 
-            # Use progressive caching for conversation history - add cache_control to final message
-            messages_with_cache = []
-
-            for idx, msg in enumerate(messages):
-                msg_copy = msg.copy()
-
-                # If this is the last message in the conversation history, add cache_control
-                if idx == len(messages) - 1:
-                    self.logger.debug(
-                        f"Adding cache breakpoint at message {idx + 1} of {len(messages)}"
-                    )
-
-                    if isinstance(msg_copy.get("content"), str):
-                        msg_copy["content"] = [
-                            {
-                                "type": "text",
-                                "text": msg_copy["content"],
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ]
-                    elif isinstance(msg_copy.get("content"), list):
-                        content_list = []
-                        for c_idx, content in enumerate(msg_copy["content"]):
-                            # Skip image blocks for caching
-                            if isinstance(content, dict):
-                                content_copy = content.copy()
-                                # Only add cache control to the last content block if it's not an image
-                                if (
-                                    c_idx == len(msg_copy["content"]) - 1
-                                    and content.get("type") != "image"
-                                ):
-                                    content_copy["cache_control"] = {
-                                        "type": "ephemeral"
-                                    }
-                                content_list.append(content_copy)
-                            else:
-                                content_list.append(content)
-                        msg_copy["content"] = content_list
-
-                messages_with_cache.append(msg_copy)
+            # Add cache_control to final message
+            messages_with_cache = self._apply_cache_to_messages(messages)
 
             arguments = {
                 "model": model,
@@ -430,6 +365,115 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
                 return str(content)
 
         return str(message)
+
+    def _apply_cache_to_tools(self, tools):
+        """
+        Apply cache control to tools.
+        Marks the last tool with ephemeral cache control.
+
+        Args:
+            tools: List of tools to apply cache control to
+
+        Returns:
+            List of tools with cache control applied
+        """
+        if tools and len(tools) > 0:
+            # Apply cache control directly to the last tool
+            tools[-1]["cache_control"] = {"type": "ephemeral"}
+
+        return tools
+
+    def _apply_cache_to_system_prompt(self, system_content):
+        """
+        Apply cache control to system prompt.
+        Marks the last block with ephemeral cache control.
+
+        Args:
+            system_content: System prompt content (string or list)
+
+        Returns:
+            System prompt with cache control applied
+        """
+        if not system_content:
+            return None
+
+        system_with_cache = None
+        if isinstance(system_content, str):
+            system_with_cache = [
+                {
+                    "type": "text",
+                    "text": system_content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        elif isinstance(system_content, list):
+            system_with_cache = []
+            for idx, block in enumerate(system_content):
+                block_copy = (
+                    block.copy()
+                    if isinstance(block, dict)
+                    else {"type": "text", "text": block}
+                )
+                # Add cache control to the last block
+                if idx == len(system_content) - 1:
+                    block_copy["cache_control"] = {"type": "ephemeral"}
+                system_with_cache.append(block_copy)
+
+        return system_with_cache
+
+    def _apply_cache_to_messages(self, messages):
+        """
+        Apply cache control to messages.
+        Marks the last message with ephemeral cache control.
+
+        Args:
+            messages: List of messages to apply cache control to
+
+        Returns:
+            List of messages with cache control applied
+        """
+        if not messages:
+            return []
+
+        messages_with_cache = []
+
+        for idx, msg in enumerate(messages):
+            # Only copy the message if it's the last one that needs modification
+            if idx == len(messages) - 1:
+                msg_copy = msg.copy()
+
+                self.logger.debug(
+                    f"Adding cache breakpoint at message {idx + 1} of {len(messages)}"
+                )
+
+                if isinstance(msg_copy.get("content"), str):
+                    msg_copy["content"] = [
+                        {
+                            "type": "text",
+                            "text": msg_copy["content"],
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                elif isinstance(msg_copy.get("content"), list):
+                    content_list = []
+                    for c_idx, content in enumerate(msg_copy["content"]):
+                        if isinstance(content, dict):
+                            if c_idx == len(msg_copy["content"]) - 1:
+                                content_copy = content.copy()
+                                content_copy["cache_control"] = {"type": "ephemeral"}
+                                content_list.append(content_copy)
+                            else:
+                                content_list.append(content)
+                        else:
+                            content_list.append(content)
+                    msg_copy["content"] = content_list
+
+                messages_with_cache.append(msg_copy)
+            else:
+                # For non-last messages, use them directly without copying
+                messages_with_cache.append(msg)
+
+        return messages_with_cache
 
 
 class AnthropicMCPTypeConverter(ProviderToMCPConverter[MessageParam, Message]):
