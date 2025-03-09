@@ -197,7 +197,6 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
 
                 messages_with_cache.append(msg_copy)
 
-            # Build the arguments with cache-enabled components
             arguments = {
                 "model": model,
                 "max_tokens": params.maxTokens,
@@ -227,23 +226,6 @@ class AnthropicAugmentedLLM(AugmentedLLM[MessageParam, Message]):
                 f"{model} response:",
                 data=response,
             )
-
-            # Log the response with cache info
-            usage_info = response.usage if hasattr(response, "usage") else {}
-            cache_info = {
-                "created_tokens": usage_info.get("cache_creation_input_tokens", 0),
-                "cached_tokens": usage_info.get("cache_read_input_tokens", 0),
-            }
-
-            # Log specific cache info for monitoring
-            if cache_info.get("cached_tokens", 0) > 0:
-                self.logger.info(
-                    f"Cache hit: {cache_info.get('cached_tokens')} tokens read from cache"
-                )
-            elif cache_info.get("created_tokens", 0) > 0:
-                self.logger.info(
-                    f"Cache created: {cache_info.get('created_tokens')} tokens written to cache"
-                )
 
             response_as_message = self.convert_message_to_message_param(response)
             messages.append(response_as_message)
